@@ -111,7 +111,7 @@ public
 .pnp.*
 
 # IDE files
-.vscode/
+
 .idea/
 *.swp
 *.swo
@@ -147,7 +147,7 @@ dist/
 
 # Temporary files
 tmp/
-temp/
+
 
 # Local development
 .local
