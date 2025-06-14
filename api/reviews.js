@@ -6,15 +6,25 @@ let cache = null;
 let cacheTime = 0;
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
-// App IDs
-const MEESHO_PLAY = 'com.meesho.supply';
-const MEESHO_APP = { id: 1457958492, country: 'in' };
-const CRED_PLAY = 'com.dreamplug.androidapp';
-const CRED_APP = { id: 1343011398, country: 'in' };
+// App configurations
+const APPS = {
+  meesho: {
+    playStore: 'com.meesho.supply',
+    appStore: { id: 1457958492, country: 'in' },
+    name: 'Meesho'
+  },
+  cred: {
+    playStore: 'com.dreamplug.androidapp',
+    appStore: { id: 1343011398, country: 'in' },
+    name: 'CRED'
+  }
+};
 
 // Get Play Store reviews
-async function getPlayStoreReviews(appId, appName, count = 20) {
+async function getPlayStoreReviews(appId, appName, count = 18) {
   try {
+    console.log(`Fetching Play Store reviews for ${appName}...`);
+    
     const reviews = await gplay.reviews({
       appId: appId,
       sort: gplay.sort.NEWEST,
@@ -31,7 +41,8 @@ async function getPlayStoreReviews(appId, appName, count = 20) {
       review: review.text || '',
       date: review.date ? new Date(review.date).toISOString() : null,
       version: review.version || null,
-      thumbsUp: review.thumbsUp || 0
+      thumbsUp: review.thumbsUp || 0,
+      reviewId: review.id || null
     }));
   } catch (error) {
     console.error(`Play Store error for ${appName}:`, error.message);
@@ -40,8 +51,10 @@ async function getPlayStoreReviews(appId, appName, count = 20) {
 }
 
 // Get App Store reviews
-async function getAppStoreReviews(appConfig, appName, count = 20) {
+async function getAppStoreReviews(appConfig, appName, count = 18) {
   try {
+    console.log(`Fetching App Store reviews for ${appName}...`);
+    
     const reviews = await store.reviews({
       id: appConfig.id,
       country: appConfig.country,
@@ -58,7 +71,8 @@ async function getAppStoreReviews(appConfig, appName, count = 20) {
       review: review.text || '',
       date: review.updated ? new Date(review.updated).toISOString() : null,
       version: review.version || null,
-      thumbsUp: 0
+      thumbsUp: 0,
+      reviewId: review.id || null
     }));
   } catch (error) {
     console.error(`App Store error for ${appName}:`, error.message);
@@ -70,84 +84,109 @@ async function getAppStoreReviews(appConfig, appName, count = 20) {
 async function getAllReviews() {
   const now = Date.now();
   
-  // Return cached data if available
+  // Return cached data if available and not expired
   if (cache && (now - cacheTime) < CACHE_DURATION) {
+    console.log('Returning cached data');
     return cache;
   }
 
-  console.log('Fetching fresh reviews...');
+  console.log('Fetching fresh reviews from both stores...');
   
-  const allReviews = [];
+  try {
+    // Fetch reviews from all sources with error handling
+    const reviewPromises = [
+      getPlayStoreReviews(APPS.meesho.playStore, APPS.meesho.name, 18),
+      getAppStoreReviews(APPS.meesho.appStore, APPS.meesho.name, 18),
+      getPlayStoreReviews(APPS.cred.playStore, APPS.cred.name, 18),
+      getAppStoreReviews(APPS.cred.appStore, APPS.cred.name, 18)
+    ];
 
-  // Get reviews from all sources
-  const [
-    meeshoPlay,
-    meeshoApp,
-    credPlay,
-    credApp
-  ] = await Promise.all([
-    getPlayStoreReviews(MEESHO_PLAY, 'Meesho', 20),
-    getAppStoreReviews(MEESHO_APP, 'Meesho', 20),
-    getPlayStoreReviews(CRED_PLAY, 'CRED', 20),
-    getAppStoreReviews(CRED_APP, 'CRED', 20)
-  ]);
+    const [meeshoPlay, meeshoApp, credPlay, credApp] = await Promise.all(reviewPromises);
 
-  // Combine all reviews
-  allReviews.push(...meeshoPlay, ...meeshoApp, ...credPlay, ...credApp);
+    // Combine all reviews
+    const allReviews = [...meeshoPlay, ...meeshoApp, ...credPlay, ...credApp];
 
-  // Sort by rating and date
-  const sortedReviews = allReviews
-    .filter(review => review.review && review.review.length > 10) // Filter out empty reviews
-    .sort((a, b) => {
-      if (b.rating !== a.rating) return b.rating - a.rating; // Higher rating first
-      return new Date(b.date) - new Date(a.date); // More recent first
-    })
-    .slice(0, 75); // Limit to 75 reviews
+    // Filter and sort reviews
+    const filteredReviews = allReviews
+      .filter(review => review && review.review && review.review.length > 5)
+      .sort((a, b) => {
+        // Sort by rating first, then by date
+        if (b.rating !== a.rating) return b.rating - a.rating;
+        return new Date(b.date || 0) - new Date(a.date || 0);
+      })
+      .slice(0, 75);
 
-  const result = {
-    success: true,
-    total: sortedReviews.length,
-    apps: ['Meesho', 'CRED'],
-    stores: ['Google Play Store', 'Apple App Store'],
-    lastUpdated: new Date().toISOString(),
-    reviews: sortedReviews
-  };
+    const result = {
+      success: true,
+      total: filteredReviews.length,
+      apps: ['Meesho', 'CRED'],
+      stores: ['Google Play Store', 'Apple App Store'],
+      lastUpdated: new Date().toISOString(),
+      cacheExpiresAt: new Date(now + CACHE_DURATION).toISOString(),
+      reviews: filteredReviews
+    };
 
-  // Cache the result
-  cache = result;
-  cacheTime = now;
+    // Update cache
+    cache = result;
+    cacheTime = now;
 
-  return result;
+    console.log(`✅ Successfully fetched ${filteredReviews.length} reviews`);
+    return result;
+
+  } catch (error) {
+    console.error('Error fetching reviews:', error);
+    
+    // Return cached data if available, even if expired
+    if (cache) {
+      console.log('Returning stale cached data due to error');
+      return { ...cache, stale: true, error: 'Using cached data due to fetch error' };
+    }
+    
+    throw error;
+  }
 }
 
-// For Vercel serverless function
-module.exports = async (req, res) => {
+// Vercel serverless function handler
+export default async function handler(req, res) {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Content-Type', 'application/json');
 
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  // Only allow GET requests
   if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return res.status(405).json({ 
+      success: false,
+      error: 'Method not allowed',
+      message: 'Only GET requests are supported'
+    });
   }
 
   try {
+    console.log('🚀 API request received');
+    
     const reviews = await getAllReviews();
+    
+    console.log(`📊 Returning ${reviews.total} reviews`);
     res.status(200).json(reviews);
+
   } catch (error) {
-    console.error('API Error:', error);
+    console.error('💥 API Handler Error:', error);
+    
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch reviews',
-      message: error.message
+      error: 'Internal server error',
+      message: 'Failed to fetch reviews from app stores',
+      timestamp: new Date().toISOString(),
+      // Include error details in development
+      ...(process.env.NODE_ENV === 'development' && { details: error.message })
     });
   }
-};
-
-// For local testing
-if (require.main === module) {
-  getAllReviews().then(result => {
-    console.log(`✅ Got ${result.total} reviews`);
-    console.log(JSON.stringify(result, null, 2));
-  }).catch(console.error);
 }
